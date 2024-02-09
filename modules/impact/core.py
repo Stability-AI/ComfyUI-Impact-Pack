@@ -253,14 +253,30 @@ def enhance_detail(image, model, clip, vae, guide_size, guide_size_for_bbox, max
             model2, seed2, steps2, cfg2, sampler_name2, scheduler2, positive2, negative2, upscaled_latent2, denoise2 = \
                 model, seed + i, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise
 
+        # padding input image with 128 step (for XLA)
+        padding_offset_h = 0
+        padding_offset_w = 0
+        # shape BCHW
+        padding_latent_h = math.ceil(refined_latent["samples"].shape[2] / 128) * 128
+        padding_offset_h = padding_latent_h - refined_latent["samples"].shape[2]
+
+        padding_latent_w = math.ceil(refined_latent["samples"].shape[3] / 128) * 128
+        padding_offset_w = padding_latent_w - refined_latent["samples"].shape[3]
+
+        if padding_offset_h > 0 or padding_offset_w > 0:
+            print("padding input samples to:",padding_latent_h,padding_latent_h)
+            refined_latent["samples"] = F.pad( refined_latent["samples"], (0, padding_offset_w, 0, padding_offset_h), "replicate")
         refined_latent = impact_sampling.ksampler_wrapper(model2, seed2, steps2, cfg2, sampler_name2, scheduler2, positive2, negative2,
                                                           refined_latent, denoise2, refiner_ratio, refiner_model, refiner_clip, refiner_positive, refiner_negative)
-
     if detailer_hook is not None:
         refined_latent = detailer_hook.pre_decode(refined_latent)
 
     # non-latent downscale - latent downscale cause bad quality
     refined_image = vae.decode(refined_latent['samples'])
+    if padding_offset_h > 0 or padding_offset_w > 0: # unpadding output image (for XLA)
+        unpad_h = int(refined_image.shape[1] - (refined_image.shape[1]/padding_latent_h)*padding_offset_h)
+        unpad_w = int(refined_image.shape[2] - (refined_image.shape[2]/padding_latent_w)*padding_offset_w)
+        refined_image = refined_image[ :, :unpad_h, :unpad_w, :]
 
     if detailer_hook is not None:
         refined_image = detailer_hook.post_decode(refined_image)
